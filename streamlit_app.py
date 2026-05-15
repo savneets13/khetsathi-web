@@ -6,16 +6,34 @@ A simple Streamlit web app that uses the trained MobileNetV2 model
 to identify crop diseases from leaf photos. Designed for smartphone
 browsers — works on any device with internet.
 
-Deployment: Streamlit Community Cloud (free)
-Repository: GitHub
+Deployment: Streamlit Community Cloud (free tier)
 """
 
 import streamlit as st
-import tensorflow as tf
 import numpy as np
 from PIL import Image
 import json
 import os
+
+# ============================================================================
+# TFLITE RUNTIME — handles both light and full TensorFlow installations
+# ============================================================================
+# We try lightweight tflite-runtime first (better for cloud deployment),
+# and fall back to full TensorFlow if not available (better for local dev).
+
+try:
+    # Lightweight package — works on any Python version, fast to install
+    import tflite_runtime.interpreter as tflite
+    TFLITE_BACKEND = "tflite-runtime"
+except ImportError:
+    try:
+        # Fallback: full TensorFlow if user has it locally
+        import tensorflow as tf
+        tflite = tf.lite
+        TFLITE_BACKEND = "tensorflow"
+    except ImportError:
+        st.error("❌ No TFLite backend available. Install tflite-runtime or tensorflow.")
+        st.stop()
 
 # ============================================================================
 # PAGE CONFIG
@@ -86,7 +104,6 @@ st.markdown("""
 MODEL_PATH = "KhetSathiModel.tflite"
 DISEASE_INFO_PATH = "disease_info.json"
 
-# Class labels in the order the model outputs them
 CLASS_LABELS = [
     'Bell Pepper — Bacterial Spot',
     'Bell Pepper — Healthy',
@@ -112,7 +129,7 @@ IMG_SIZE = 224
 @st.cache_resource
 def load_tflite_model(path):
     """Load TFLite model and return interpreter ready for inference."""
-    interpreter = tf.lite.Interpreter(model_path=path)
+    interpreter = tflite.Interpreter(model_path=path)
     interpreter.allocate_tensors()
     return interpreter
 
@@ -122,7 +139,6 @@ def load_disease_info(path):
     if os.path.exists(path):
         with open(path, 'r') as f:
             data = json.load(f)
-        # Build lookup by display name + crop
         return {f"{d['crop']} — {d['display_name']}": d for d in data['diseases']}
     return {}
 
@@ -135,32 +151,22 @@ def predict(image: Image.Image, interpreter) -> tuple:
     Run inference on a PIL image.
     Returns (top_class_label, all_probabilities_dict).
     """
-    # Resize and convert to RGB
     img = image.convert('RGB').resize((IMG_SIZE, IMG_SIZE))
-
-    # Convert to numpy array
     img_array = np.array(img, dtype=np.float32)
 
-    # MobileNetV2 preprocessing: scale to [-1, 1]
+    # MobileNetV2 preprocessing: scale pixels to [-1, 1]
     img_array = (img_array / 127.5) - 1.0
-
-    # Add batch dimension: (224, 224, 3) → (1, 224, 224, 3)
     img_array = np.expand_dims(img_array, axis=0)
 
-    # Get input/output tensors
     input_details = interpreter.get_input_details()
     output_details = interpreter.get_output_details()
 
-    # Run inference
     interpreter.set_tensor(input_details[0]['index'], img_array)
     interpreter.invoke()
     output = interpreter.get_tensor(output_details[0]['index'])[0]
 
-    # Get top class
     top_idx = int(np.argmax(output))
     top_label = CLASS_LABELS[top_idx]
-
-    # Build probability dictionary
     probs = {CLASS_LABELS[i]: float(output[i]) for i in range(len(CLASS_LABELS))}
 
     return top_label, probs
@@ -169,7 +175,6 @@ def predict(image: Image.Image, interpreter) -> tuple:
 # UI
 # ============================================================================
 
-# Header
 st.markdown("# 🌱 KhetSathi")
 st.markdown("### Crop Disease Detector for Indian Farmers")
 st.markdown(
@@ -189,7 +194,6 @@ except Exception as e:
     model_ready = False
 
 if model_ready:
-    # Image input
     st.markdown("## 📸 Provide a Leaf Photo")
 
     tab1, tab2 = st.tabs(["Upload Photo", "Take Photo"])
@@ -210,7 +214,6 @@ if model_ready:
         if captured is not None:
             image = Image.open(captured)
 
-    # If we have an image, show it and predict
     if image is not None:
         st.markdown("---")
         st.markdown("## 🔍 Analysis")
@@ -226,29 +229,31 @@ if model_ready:
             with st.spinner("Analyzing leaf..."):
                 top_label, probs = predict(image, interpreter)
 
-            # Look up disease info
             info = disease_info.get(top_label)
 
-            # Display top prediction
             st.markdown(f"### {top_label}")
-
             top_prob = probs[top_label]
             st.markdown(f"**Confidence:** {top_prob*100:.1f}%")
             st.progress(min(top_prob, 1.0))
 
-            # Severity badge
             if info:
                 severity = info.get('severity', 'moderate')
                 severity_class = f"severity-{severity}" if severity in ['healthy', 'moderate', 'severe'] else 'severity-moderate'
-                severity_label = "🟢 Healthy" if severity == "none" else f"🟡 {severity.title()}" if severity == "moderate" else f"🔴 {severity.title()}"
                 if severity == "none":
                     severity_class = "severity-healthy"
+                    severity_label = "🟢 Healthy"
+                elif severity == "moderate":
+                    severity_label = "🟡 Moderate"
+                elif severity == "severe":
+                    severity_label = "🔴 Severe"
+                else:
+                    severity_label = f"🟡 {severity.title()}"
+
                 st.markdown(
                     f'<span class="severity-badge {severity_class}">{severity_label}</span>',
                     unsafe_allow_html=True
                 )
 
-        # Detailed info
         if info:
             st.markdown("---")
             st.markdown(f"## About {info['display_name']}")
@@ -256,25 +261,20 @@ if model_ready:
             if info.get('pathogen'):
                 st.markdown(f"**Pathogen:** *{info['pathogen']}*")
 
-            # Symptoms
             st.markdown("### 🔬 Symptoms")
             st.markdown(f'<div class="info-card">{info["symptoms"]}</div>', unsafe_allow_html=True)
 
-            # Treatment (only if not healthy)
             if not info.get('is_healthy', False):
                 st.markdown("### 💊 Treatment")
                 st.markdown(f'<div class="info-card">{info["treatment"]}</div>', unsafe_allow_html=True)
 
-            # Prevention
             st.markdown("### 🛡️ Prevention")
             st.markdown(f'<div class="info-card">{info["prevention"]}</div>', unsafe_allow_html=True)
 
-            # Favorable conditions
             if info.get('favorable_conditions'):
                 st.markdown("### 🌤️ Favorable Conditions")
                 st.markdown(f'<div class="info-card">{info["favorable_conditions"]}</div>', unsafe_allow_html=True)
 
-        # Top 3 predictions
         st.markdown("---")
         with st.expander("📊 See top 3 predictions"):
             sorted_probs = sorted(probs.items(), key=lambda x: x[1], reverse=True)[:3]
@@ -283,7 +283,6 @@ if model_ready:
                 st.progress(min(prob, 1.0))
 
     else:
-        # Instructions when no image yet
         st.info(
             "👆 Upload a photo or take one with your camera to get started.\n\n"
             "**Best results when:**\n"
@@ -296,9 +295,10 @@ if model_ready:
 # Footer
 st.markdown("---")
 st.markdown(
-    "<small style='color: #87A96B;'>"
-    "🌾 KhetSathi — BCA Major Project | Crop Disease Detection using Deep Learning | "
-    "Model: MobileNetV2 (Transfer Learning) | Test Accuracy: 95.32%"
-    "</small>",
+    f"<small style='color: #87A96B;'>"
+    f"🌾 KhetSathi — BCA Major Project | Crop Disease Detection using Deep Learning | "
+    f"Model: MobileNetV2 (Transfer Learning) | Test Accuracy: 95.32% | "
+    f"Backend: {TFLITE_BACKEND}"
+    f"</small>",
     unsafe_allow_html=True
 )
