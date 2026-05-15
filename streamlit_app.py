@@ -2,38 +2,18 @@
 KhetSathi Web — Crop Disease Detection
 ========================================
 
-A simple Streamlit web app that uses the trained MobileNetV2 model
-to identify crop diseases from leaf photos. Designed for smartphone
-browsers — works on any device with internet.
+Streamlit web app that uses MobileNetV2 to identify crop diseases from leaf photos.
+Runs on Python 3.11 (pinned via runtime.txt) for stable ML library compatibility.
 
 Deployment: Streamlit Community Cloud (free tier)
 """
 
 import streamlit as st
+import tensorflow as tf
 import numpy as np
 from PIL import Image
 import json
 import os
-
-# ============================================================================
-# TFLITE RUNTIME — handles both light and full TensorFlow installations
-# ============================================================================
-# We try lightweight tflite-runtime first (better for cloud deployment),
-# and fall back to full TensorFlow if not available (better for local dev).
-
-try:
-    # Lightweight package — works on any Python version, fast to install
-    import tflite_runtime.interpreter as tflite
-    TFLITE_BACKEND = "tflite-runtime"
-except ImportError:
-    try:
-        # Fallback: full TensorFlow if user has it locally
-        import tensorflow as tf
-        tflite = tf.lite
-        TFLITE_BACKEND = "tensorflow"
-    except ImportError:
-        st.error("❌ No TFLite backend available. Install tflite-runtime or tensorflow.")
-        st.stop()
 
 # ============================================================================
 # PAGE CONFIG
@@ -46,16 +26,10 @@ st.set_page_config(
     initial_sidebar_state="collapsed",
 )
 
-# Custom CSS for earthy agricultural theme
 st.markdown("""
 <style>
-    .stApp {
-        background-color: #FAF7F0;
-    }
-    h1, h2, h3 {
-        color: #2D5016;
-        font-family: 'Georgia', serif;
-    }
+    .stApp { background-color: #FAF7F0; }
+    h1, h2, h3 { color: #2D5016; font-family: 'Georgia', serif; }
     .stButton>button {
         background-color: #2D5016;
         color: #FAF7F0;
@@ -64,9 +38,7 @@ st.markdown("""
         border-radius: 8px;
         font-weight: 600;
     }
-    .stButton>button:hover {
-        background-color: #87A96B;
-    }
+    .stButton>button:hover { background-color: #87A96B; }
     .severity-badge {
         display: inline-block;
         padding: 4px 12px;
@@ -75,18 +47,9 @@ st.markdown("""
         font-weight: 600;
         margin-bottom: 1rem;
     }
-    .severity-healthy {
-        background-color: #C8D5B9;
-        color: #2D5016;
-    }
-    .severity-moderate {
-        background-color: #FFE4B5;
-        color: #8B6914;
-    }
-    .severity-severe {
-        background-color: #FFB6B0;
-        color: #8B2500;
-    }
+    .severity-healthy { background-color: #C8D5B9; color: #2D5016; }
+    .severity-moderate { background-color: #FFE4B5; color: #8B6914; }
+    .severity-severe { background-color: #FFB6B0; color: #8B2500; }
     .info-card {
         background: white;
         border-left: 4px solid #87A96B;
@@ -128,14 +91,12 @@ IMG_SIZE = 224
 
 @st.cache_resource
 def load_tflite_model(path):
-    """Load TFLite model and return interpreter ready for inference."""
-    interpreter = tflite.Interpreter(model_path=path)
+    interpreter = tf.lite.Interpreter(model_path=path)
     interpreter.allocate_tensors()
     return interpreter
 
 @st.cache_data
 def load_disease_info(path):
-    """Load the disease information JSON."""
     if os.path.exists(path):
         with open(path, 'r') as f:
             data = json.load(f)
@@ -147,20 +108,13 @@ def load_disease_info(path):
 # ============================================================================
 
 def predict(image: Image.Image, interpreter) -> tuple:
-    """
-    Run inference on a PIL image.
-    Returns (top_class_label, all_probabilities_dict).
-    """
     img = image.convert('RGB').resize((IMG_SIZE, IMG_SIZE))
     img_array = np.array(img, dtype=np.float32)
-
-    # MobileNetV2 preprocessing: scale pixels to [-1, 1]
     img_array = (img_array / 127.5) - 1.0
     img_array = np.expand_dims(img_array, axis=0)
 
     input_details = interpreter.get_input_details()
     output_details = interpreter.get_output_details()
-
     interpreter.set_tensor(input_details[0]['index'], img_array)
     interpreter.invoke()
     output = interpreter.get_tensor(output_details[0]['index'])[0]
@@ -168,7 +122,6 @@ def predict(image: Image.Image, interpreter) -> tuple:
     top_idx = int(np.argmax(output))
     top_label = CLASS_LABELS[top_idx]
     probs = {CLASS_LABELS[i]: float(output[i]) for i in range(len(CLASS_LABELS))}
-
     return top_label, probs
 
 # ============================================================================
@@ -183,21 +136,18 @@ st.markdown(
 )
 st.markdown("---")
 
-# Load model and info
 try:
     interpreter = load_tflite_model(MODEL_PATH)
     disease_info = load_disease_info(DISEASE_INFO_PATH)
     model_ready = True
 except Exception as e:
     st.error(f"⚠️ Model failed to load: {e}")
-    st.info("Make sure KhetSathiModel.tflite is in the same directory as this script.")
     model_ready = False
 
 if model_ready:
     st.markdown("## 📸 Provide a Leaf Photo")
 
     tab1, tab2 = st.tabs(["Upload Photo", "Take Photo"])
-
     image = None
 
     with tab1:
@@ -238,15 +188,17 @@ if model_ready:
 
             if info:
                 severity = info.get('severity', 'moderate')
-                severity_class = f"severity-{severity}" if severity in ['healthy', 'moderate', 'severe'] else 'severity-moderate'
                 if severity == "none":
                     severity_class = "severity-healthy"
                     severity_label = "🟢 Healthy"
                 elif severity == "moderate":
+                    severity_class = "severity-moderate"
                     severity_label = "🟡 Moderate"
                 elif severity == "severe":
+                    severity_class = "severity-severe"
                     severity_label = "🔴 Severe"
                 else:
+                    severity_class = "severity-moderate"
                     severity_label = f"🟡 {severity.title()}"
 
                 st.markdown(
@@ -292,13 +244,11 @@ if model_ready:
             "- Sharp focus on the leaf"
         )
 
-# Footer
 st.markdown("---")
 st.markdown(
-    f"<small style='color: #87A96B;'>"
-    f"🌾 KhetSathi — BCA Major Project | Crop Disease Detection using Deep Learning | "
-    f"Model: MobileNetV2 (Transfer Learning) | Test Accuracy: 95.32% | "
-    f"Backend: {TFLITE_BACKEND}"
-    f"</small>",
+    "<small style='color: #87A96B;'>"
+    "🌾 KhetSathi — BCA Major Project | Crop Disease Detection using Deep Learning | "
+    "Model: MobileNetV2 (Transfer Learning) | Test Accuracy: 95.32%"
+    "</small>",
     unsafe_allow_html=True
 )
